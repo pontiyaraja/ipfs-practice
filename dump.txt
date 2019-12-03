@@ -1,0 +1,17 @@
+== Info:   Trying ::1...
+== Info: TCP_NODELAY set
+== Info: Connected to localhost (::1) port 4001 (#0)
+=> Send header, 129 bytes (0x81)
+0000: GET /api/v0/files/stat?arg=/poc/senappcopy.txt&hash=true HTTP/1.
+0040: 1
+0043: Host: localhost:4001
+0059: User-Agent: curl/7.54.0
+0072: Accept: */*
+007f: 
+<= Recv data, 43 bytes (0x2b)
+0000: E..........=.....&.c....mH".........%5-d...
+<= Recv data, 1 bytes (0x1)
+0000: -
+== Info: Recv failure: Connection reset by peer
+== Info: stopped the pause stream!
+== Info: Closing connection 0
