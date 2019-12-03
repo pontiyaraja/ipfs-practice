@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"io/ioutil"
 	"log"
@@ -1209,6 +1210,48 @@ func randomString(len int) []byte {
 }
 
 func main() {
+	session = make(map[int]bool)
+	//session[1] = true
+	http.HandleFunc("/do", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Hello, %q", html.EscapeString(r.URL.Path))
+		ctx := context.Background()
+		for i := 0; i < 3; i++ {
+			go test(ctx, i)
+		}
+	})
+	fmt.Println("started 8088...")
+	log.Fatal(http.ListenAndServe(":8088", nil))
+}
+
+var session map[int]bool
+
+func test(ctx context.Context, i int) {
+	if session[i] == true {
+		fmt.Println("session already exist", i)
+		return
+	}
+	fmt.Println("created new session ", i)
+	cctx, cancelFunc := context.WithCancel(ctx)
+	printIt(cctx, cancelFunc, i)
+	//for {
+	fmt.Println("for......")
+	select {
+	case <-cctx.Done():
+		fmt.Println("Exiting", cctx.Err())
+		session[i] = false
+		return
+	}
+	//}
+}
+
+func printIt(ctx context.Context, cancelFunc context.CancelFunc, i int) {
+	session[i] = true
+	fmt.Println("session in use  ", i)
+	time.Sleep(time.Second * 60)
+	defer cancelFunc()
+}
+
+func mainEncy() {
 	//sendPostRequest("http://localhost:5001/", "/Users/pandiyarajaramamoorthy/kfs_file_api_log2.txt", "text/plain")
 
 	size := flag.Int("bitsize", ed25519.PrivateKeySize, "select the bitsize of the key to generate")
