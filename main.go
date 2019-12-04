@@ -27,12 +27,15 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	example "github.com/KIPFoundation/wyoming-test/example"
+	"github.com/go-redis/redis"
 	"github.com/golang/protobuf/proto"
 
 	crand "crypto/rand"
@@ -1210,45 +1213,124 @@ func randomString(len int) []byte {
 }
 
 func main() {
-	session = make(map[int]bool)
-	//session[1] = true
 	http.HandleFunc("/do", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Hello, %q", html.EscapeString(r.URL.Path))
 		ctx := context.Background()
 		for i := 0; i < 3; i++ {
+			_, err := RPush("numbers", strconv.Itoa(i))
+			if err != nil {
+				panic(err)
+			}
 			go test(ctx, i)
 		}
+
 	})
 	fmt.Println("started 8088...")
 	log.Fatal(http.ListenAndServe(":8088", nil))
 }
 
-var session map[int]bool
-
 func test(ctx context.Context, i int) {
-	if session[i] == true {
-		fmt.Println("session already exist", i)
+	fmt.Println("GO ROutiens :  ", runtime.NumGoroutine())
+	if sessionList.get(strconv.Itoa(i)) == true {
+		fmt.Println("session already exist pushing it to queue", i)
+		_, err := RPush("numbers", strconv.Itoa(i))
+		if err != nil {
+			panic(err)
+		}
 		return
 	}
+	sessionList.set(strconv.Itoa(i))
 	fmt.Println("created new session ", i)
 	cctx, cancelFunc := context.WithCancel(ctx)
-	printIt(cctx, cancelFunc, i)
-	//for {
-	fmt.Println("for......")
+	processIt(cctx, cancelFunc, i)
 	select {
 	case <-cctx.Done():
 		fmt.Println("Exiting", cctx.Err())
-		session[i] = false
+		sessionList.release(strconv.Itoa(i))
 		return
 	}
-	//}
 }
 
-func printIt(ctx context.Context, cancelFunc context.CancelFunc, i int) {
-	session[i] = true
-	fmt.Println("session in use  ", i)
-	time.Sleep(time.Second * 60)
+func processIt(ctx context.Context, cancelFunc context.CancelFunc, i int) {
 	defer cancelFunc()
+	fmt.Println("session in use  ", i)
+	time.Sleep(time.Second * 3)
+}
+
+var (
+	sessionList *SessionMap
+	cOnce       sync.Once
+)
+
+type SessionMap struct {
+	m map[string]bool
+	l *sync.RWMutex
+}
+
+func newSessionList() *SessionMap {
+
+	cOnce.Do(func() {
+		sessionList = &SessionMap{
+			l: new(sync.RWMutex),
+			m: make(map[string]bool),
+		}
+	})
+	return sessionList
+}
+
+func init() {
+	sessionList = newSessionList()
+}
+
+func (c *SessionMap) set(key string) {
+	c.l.Lock()
+	defer c.l.Unlock()
+	c.m[key] = true
+}
+
+func (c *SessionMap) release(key string) {
+	c.l.Lock()
+	defer c.l.Unlock()
+	c.m[key] = false
+}
+
+func (c *SessionMap) get(key string) bool {
+	c.l.RLock()
+	defer c.l.RUnlock()
+	isBlocked, ok := c.m[key]
+	if !ok {
+		return false
+	}
+	return isBlocked
+}
+
+func connect() *redis.Client {
+	redisclient := redis.NewClient(&redis.Options{
+		Addr:            "localhost:6379",
+		Password:        "",
+		DB:              0,
+		MaxRetries:      5,
+		MaxRetryBackoff: time.Duration(5 * time.Second),
+		PoolTimeout:     time.Duration(3 * time.Second),
+	})
+	redisclient.Ping().Name()
+	return redisclient
+}
+
+func LPop(listName string) (string, error) {
+	c := connect()
+	defer c.Close()
+	strCmd := c.LPop(listName)
+	return strCmd.Result()
+	//fmt.Println(res, err)
+}
+
+func RPush(listName, value string) (int64, error) {
+	c := connect()
+	defer c.Close()
+	strCmd := c.RPush(listName, value)
+	return strCmd.Result()
+	//fmt.Println(res, err)
 }
 
 func mainEncy() {
