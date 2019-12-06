@@ -1212,16 +1212,98 @@ func randomString(len int) []byte {
 	return bytes //string(bytes)
 }
 
+type treeInput struct {
+	Energy int
+	Coins  int
+}
+
+func mainGr() {
+	input := []treeInput{treeInput{2, 0}, treeInput{1, 3}, treeInput{5, 23}, treeInput{3, 9}, treeInput{3, 2}, treeInput{1, 2}}
+	tree := formBinaryTree(input)
+	PrintTree(tree)
+}
+
+type Tree struct {
+	left  *Tree
+	right *Tree
+	treeInput
+	isDone bool
+}
+
+var preVal *int
+
+func PrintTree(tree *Tree) {
+	if tree != nil {
+		fmt.Println(tree.Energy, tree.Coins, tree.isDone)
+	}
+	if tree.left != nil {
+		fmt.Println("left -> ")
+		PrintTree(tree.left)
+	}
+	if tree.right != nil {
+		//fmt.Println("right -> left", tree.left, " val ", tree.left.val, tree.val)
+		//fmt.Println("right -> ", tree.right, " val ", tree.right.val, tree.val)
+		fmt.Println("right -> ")
+		PrintTree(tree.right)
+	}
+}
+
+func formBinaryTree(inp []treeInput) *Tree {
+	var tree *Tree
+	for _, data := range inp {
+		tree = insert(tree, data)
+	}
+	return tree
+}
+
+var isDone bool
+
+func insert(tree *Tree, val treeInput) *Tree {
+	if tree == nil && val.Energy >= 0 {
+		if val.Energy == 0 {
+			isDone = true
+		} else {
+			isDone = false
+		}
+		return &Tree{nil, nil, val, isDone} //treeInput{1, 0}, false}
+	}
+	//fmt.Println(val.Energy, tree.Energy)
+	//if val.Energy-1 > 0 && val.Energy-1 < tree.Energy {
+
+	if tree != nil {
+		tree.left = insert(tree.left, treeInput{tree.Energy - 1, val.Coins + tree.Coins})
+		//}
+		//return tree
+		//}
+		tree.right = insert(tree.right, treeInput{val.Energy + (tree.Energy - 1), tree.Coins})
+	}
+	return tree
+	//}
+}
+
 func main() {
 	http.HandleFunc("/do", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Hello, %q", html.EscapeString(r.URL.Path))
 		ctx := context.Background()
 		for i := 0; i < 3; i++ {
-			_, err := RPush("numbers", strconv.Itoa(i))
-			if err != nil {
-				panic(err)
+			sess := sessionList.get(strconv.Itoa(i))
+			if sess == nil {
+				fmt.Println("session is empty===============")
+				sessionList.set(strconv.Itoa(i))
+				fmt.Println("created new session ", i)
+				go test(ctx, i)
+			} else {
+				fmt.Println("session already exist pushing it to queue", i)
+				_, err := RPush("numbers", strconv.Itoa(i))
+				if err != nil {
+					panic(err)
+				}
+				if sess.isActive {
+					fmt.Println("============================================= ", sess.isActive)
+					sess.isActive = false
+					sess.msgChan <- true
+				}
 			}
-			go test(ctx, i)
 		}
 
 	})
@@ -1230,31 +1312,43 @@ func main() {
 }
 
 func test(ctx context.Context, i int) {
-	fmt.Println("GO ROutiens :  ", runtime.NumGoroutine())
-	if sessionList.get(strconv.Itoa(i)) == true {
-		fmt.Println("session already exist pushing it to queue", i)
-		_, err := RPush("numbers", strconv.Itoa(i))
-		if err != nil {
-			panic(err)
+	sess := sessionList.get(strconv.Itoa(i))
+	for {
+		select {
+		case <-sess.msgChan:
+			sess = sessionList.get(strconv.Itoa(i))
+			fmt.Println("GO ROutiens :  ", runtime.NumGoroutine())
+			fmt.Println("########################################## ", sess.isActive)
+			res, err := LPop("numbers")
+			if err != nil {
+				sess.isActive = true
+				break
+			} else {
+				//sessionList.set(res)
+				fmt.Println("created new session %%%%%%%%%%%%%%%%% ", res)
+				cctx, cancelFunc := context.WithCancel(ctx)
+				processIt(cctx, cancelFunc, res)
+				//sessionList.release(strconv.Itoa(i))
+				// select {
+				// case <-cctx.Done():
+				// 	fmt.Println("Exiting", cctx.Err())
+				// 	sessionList.release(strconv.Itoa(i))
+				// }
+			}
+		default:
+			fmt.Println("GO ROutiens in default =============    :  ", runtime.NumGoroutine())
+			fmt.Println("default of session : ", i)
+			//time.Sleep(3 * time.Second)
 		}
-		return
 	}
-	sessionList.set(strconv.Itoa(i))
-	fmt.Println("created new session ", i)
-	cctx, cancelFunc := context.WithCancel(ctx)
-	processIt(cctx, cancelFunc, i)
-	select {
-	case <-cctx.Done():
-		fmt.Println("Exiting", cctx.Err())
-		sessionList.release(strconv.Itoa(i))
-		return
-	}
+	//}
 }
 
-func processIt(ctx context.Context, cancelFunc context.CancelFunc, i int) {
-	defer cancelFunc()
-	fmt.Println("session in use  ", i)
-	time.Sleep(time.Second * 3)
+func processIt(ctx context.Context, cancelFunc context.CancelFunc, i string) {
+	//defer cancelFunc()
+	fmt.Println("session in use process it ", i)
+	sessionList.release(i)
+	//time.Sleep(time.Second * 5)
 }
 
 var (
@@ -1263,16 +1357,19 @@ var (
 )
 
 type SessionMap struct {
-	m map[string]bool
+	m map[string]*Session
 	l *sync.RWMutex
+}
+type Session struct {
+	isActive bool
+	msgChan  chan bool
 }
 
 func newSessionList() *SessionMap {
-
 	cOnce.Do(func() {
 		sessionList = &SessionMap{
 			l: new(sync.RWMutex),
-			m: make(map[string]bool),
+			m: make(map[string]*Session),
 		}
 	})
 	return sessionList
@@ -1285,23 +1382,35 @@ func init() {
 func (c *SessionMap) set(key string) {
 	c.l.Lock()
 	defer c.l.Unlock()
-	c.m[key] = true
+	sess := new(Session)
+	sess.isActive = true
+	sess.msgChan = make(chan bool, 1)
+	c.m[key] = sess
+	c.m[key].msgChan <- true
 }
 
 func (c *SessionMap) release(key string) {
 	c.l.Lock()
 	defer c.l.Unlock()
-	c.m[key] = false
+	c.m[key].isActive = false
+	c.m[key].msgChan <- true
 }
 
-func (c *SessionMap) get(key string) bool {
+func (c *SessionMap) update(key string) {
+	c.l.Lock()
+	defer c.l.Unlock()
+	c.m[key].isActive = false
+	c.m[key].msgChan <- true
+}
+
+func (c *SessionMap) get(key string) *Session {
 	c.l.RLock()
 	defer c.l.RUnlock()
-	isBlocked, ok := c.m[key]
+	sessionObj, ok := c.m[key]
 	if !ok {
-		return false
+		return nil
 	}
-	return isBlocked
+	return sessionObj
 }
 
 func connect() *redis.Client {
