@@ -1302,6 +1302,7 @@ func main() {
 					fmt.Println("============================================= ", sess.isActive)
 					sess.isActive = false
 					sess.msgChan <- true
+					panic(err)
 				}
 			}
 		}
@@ -1324,31 +1325,23 @@ func test(ctx context.Context, i int) {
 				sess.isActive = true
 				break
 			} else {
-				//sessionList.set(res)
 				fmt.Println("created new session %%%%%%%%%%%%%%%%% ", res)
 				cctx, cancelFunc := context.WithCancel(ctx)
 				processIt(cctx, cancelFunc, res)
-				//sessionList.release(strconv.Itoa(i))
-				// select {
-				// case <-cctx.Done():
-				// 	fmt.Println("Exiting", cctx.Err())
-				// 	sessionList.release(strconv.Itoa(i))
-				// }
 			}
 		default:
 			fmt.Println("GO ROutiens in default =============    :  ", runtime.NumGoroutine())
 			fmt.Println("default of session : ", i)
-			//time.Sleep(3 * time.Second)
+			time.Sleep(2 * time.Millisecond)
 		}
 	}
 	//}
 }
 
 func processIt(ctx context.Context, cancelFunc context.CancelFunc, i string) {
-	//defer cancelFunc()
 	fmt.Println("session in use process it ", i)
 	sessionList.release(i)
-	//time.Sleep(time.Second * 5)
+	time.Sleep(2 * time.Millisecond)
 }
 
 var (
@@ -1377,6 +1370,11 @@ func newSessionList() *SessionMap {
 
 func init() {
 	sessionList = newSessionList()
+	connectionList = newConectionList()
+}
+
+func (c *SessionMap) getSession(key string) *Session {
+	return c.m[key]
 }
 
 func (c *SessionMap) set(key string) {
@@ -1386,14 +1384,23 @@ func (c *SessionMap) set(key string) {
 	sess.isActive = true
 	sess.msgChan = make(chan bool, 1)
 	c.m[key] = sess
-	c.m[key].msgChan <- true
+	select {
+	case c.m[key].msgChan <- true:
+	default:
+		fmt.Println("setting session................")
+	}
 }
 
 func (c *SessionMap) release(key string) {
 	c.l.Lock()
 	defer c.l.Unlock()
 	c.m[key].isActive = false
-	c.m[key].msgChan <- true
+	//c.m[key].msgChan <- true
+	select {
+	case c.m[key].msgChan <- true:
+	default:
+		fmt.Println("releasing session................")
+	}
 }
 
 func (c *SessionMap) update(key string) {
@@ -1413,30 +1420,65 @@ func (c *SessionMap) get(key string) *Session {
 	return sessionObj
 }
 
-func connect() *redis.Client {
-	redisclient := redis.NewClient(&redis.Options{
-		Addr:            "localhost:6379",
-		Password:        "",
-		DB:              0,
-		MaxRetries:      5,
-		MaxRetryBackoff: time.Duration(5 * time.Second),
-		PoolTimeout:     time.Duration(3 * time.Second),
+type redisConn struct {
+	connection *redis.Client
+}
+
+func (c *redisConn) setConnection(redisConnection *redis.Client) {
+	c.connection = redisConnection
+}
+
+func (c *redisConn) getConnection() (*redis.Client, error) {
+	redisConnection := c.connection
+	// if not cached 1.read redis server url from vault 2. connect to redis 3. cache the connection
+	if redisConnection == nil { //1.  not cached
+		redisClient := connectRedis("localhost:6379", "", 0)
+		c.setConnection(redisClient)
+		return redisClient, nil
+	}
+	return redisConnection, nil
+}
+
+var (
+	connectionList *redisConn
+	rOnce          sync.Once
+)
+
+func newConectionList() *redisConn {
+	rOnce.Do(func() {
+		connectionList = &redisConn{}
 	})
-	redisclient.Ping().Name()
-	return redisclient
+	return connectionList
+}
+
+func connectRedis(address, password string, db int) *redis.Client {
+	return redis.NewClient(loadRedisOptions(address, password, db))
+}
+
+func loadRedisOptions(address, password string, db int) *redis.Options {
+
+	return &redis.Options{
+		Addr:     address,
+		Password: password,
+		DB:       db,
+	}
 }
 
 func LPop(listName string) (string, error) {
-	c := connect()
-	defer c.Close()
+	c, err := connectionList.getConnection()
+	if err != nil {
+		return "", err
+	}
 	strCmd := c.LPop(listName)
 	return strCmd.Result()
 	//fmt.Println(res, err)
 }
 
 func RPush(listName, value string) (int64, error) {
-	c := connect()
-	defer c.Close()
+	c, err := connectionList.getConnection()
+	if err != nil {
+		return 0, err
+	}
 	strCmd := c.RPush(listName, value)
 	return strCmd.Result()
 	//fmt.Println(res, err)
